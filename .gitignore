@@ -1,0 +1,80 @@
+# Modelos YOLOv8 (se descargan automáticamente)
+*.pt
+!yolov8n.pt
+!yolov8n-pose.pt
+
+# Dataset (muy grande para GitHub)
+dataset/
+train/
+valid/
+test/
+*.zip
+roboflow.zip
+temp_dataset/
+temp_dataset_extract/
+
+# Resultados de entrenamiento
+runs/
+*.cache
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Entornos virtuales
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+
+# Archivos temporales
+*.tmp
+*.bak
+*.backup
+
+# Archivos README temporales
+README.dataset.txt
+README.roboflow.txt
+data.yaml
+
+# Archivos de configuración locales
+config.local.yaml
+.env
+
