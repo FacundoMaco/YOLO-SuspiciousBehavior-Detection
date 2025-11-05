@@ -86,10 +86,52 @@ def draw_pose_skeleton(frame, bbox, keypoints):
     return frame
 
 
+def calculate_iou(box1, box2):
+    """Calcula Intersection over Union (IoU) entre dos bounding boxes"""
+    x1_1, y1_1, x2_1, y2_1 = box1
+    x1_2, y1_2, x2_2, y2_2 = box2
+    
+    # Calcular intersección
+    x1_i = max(x1_1, x1_2)
+    y1_i = max(y1_1, y1_2)
+    x2_i = min(x2_1, x2_2)
+    y2_i = min(y2_1, y2_2)
+    
+    if x2_i <= x1_i or y2_i <= y1_i:
+        return 0.0
+    
+    intersection = (x2_i - x1_i) * (y2_i - y1_i)
+    
+    # Calcular áreas
+    area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+    area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+    union = area1 + area2 - intersection
+    
+    if union == 0:
+        return 0.0
+    
+    return intersection / union
+
+
+def calculate_distance(box1, box2):
+    """Calcula la distancia entre los centros de dos bounding boxes"""
+    x1_1, y1_1, x2_1, y2_1 = box1
+    x1_2, y1_2, x2_2, y2_2 = box2
+    
+    center1_x = (x1_1 + x2_1) / 2
+    center1_y = (y1_1 + y2_1) / 2
+    center2_x = (x1_2 + x2_2) / 2
+    center2_y = (y1_2 + y2_2) / 2
+    
+    distance = np.sqrt((center1_x - center2_x)**2 + (center1_y - center2_y)**2)
+    return distance
+
+
 def detect_objects_and_pose(frame, model_objects, model_pose, model_custom=None):
-    """Función básica de detección con soporte para modelo personalizado"""
+    """Función básica de detección con soporte para modelo personalizado y detección de personas sospechosas"""
     detected_threats = []
     alerts = []
+    knives_detected = []  # Lista de cuchillos detectados [(bbox, label, conf)]
     
     try:
         # Primero usar modelo personalizado si está disponible (más preciso para cuchillos)
@@ -104,7 +146,13 @@ def detect_objects_and_pose(frame, model_objects, model_pose, model_custom=None)
                         
                         if confidence > 0.3:  # Umbral más bajo para mejor detección
                             x1, y1, x2, y2 = map(int, box.xyxy[0])
+                            bbox = (x1, y1, x2, y2)
                             color = (0, 0, 255)  # Rojo para amenazas
+                            
+                            # Guardar cuchillo detectado
+                            if 'knife' in label.lower() or 'cuchillo' in label.lower():
+                                knives_detected.append((bbox, label, confidence))
+                            
                             detected_threats.append(label)
                             alerts.append(f"AMENAZA_DETECTADA: {label}")
                             
@@ -128,22 +176,33 @@ def detect_objects_and_pose(frame, model_objects, model_pose, model_custom=None)
                     
                     if confidence > 0.5:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        bbox = (x1, y1, x2, y2)
                         
                         # Detectar objetos peligrosos del modelo estándar
                         if label.lower() in ['knife', 'gun', 'scissors', 'baseball bat']:
                             color = (0, 0, 255)  # Rojo para amenazas
                             detected_threats.append(label)
                             alerts.append(f"AMENAZA_DETECTADA: {label}")
+                            
+                            # Guardar cuchillo detectado
+                            if label.lower() == 'knife':
+                                knives_detected.append((bbox, label, confidence))
+                            
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                            cv2.putText(frame, f"{label} {confidence:.2f}", 
+                                      (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                         elif label == 'person':
-                            color = (0, 255, 0)  # Verde para personas
+                            # Las personas se procesarán con el modelo de pose
+                            pass
                         else:
                             color = (255, 255, 0)  # Amarillo para otros
-                        
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                        cv2.putText(frame, f"{label} {confidence:.2f}", 
-                                  (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                            cv2.putText(frame, f"{label} {confidence:.2f}", 
+                                      (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
         
-        # Procesar detección de pose
+        # Procesar detección de pose y asociar con personas
+        suspicious_persons = set()  # Índices de personas sospechosas
+        
         for r in results_pose:
             if r.keypoints is not None and r.boxes is not None and len(r.boxes) > 0:
                 for i in range(min(len(r.boxes), len(r.keypoints.data))):
@@ -178,11 +237,50 @@ def detect_objects_and_pose(frame, model_objects, model_pose, model_custom=None)
                             # Marcar inválidos como (0, 0)
                             keypoints[~valid_mask] = [0, 0]
                             
+                            # Verificar si esta persona tiene un cuchillo cerca
+                            is_suspicious = False
+                            for knife_bbox, knife_label, knife_conf in knives_detected:
+                                # Calcular IoU y distancia
+                                iou = calculate_iou(bbox, knife_bbox)
+                                distance = calculate_distance(bbox, knife_bbox)
+                                
+                                # Calcular tamaño promedio de la persona para umbral dinámico
+                                person_size = np.sqrt((x2 - x1) * (y2 - y1))
+                                
+                                # Una persona es sospechosa si:
+                                # - El cuchillo está dentro de su bbox (IoU > 0) O
+                                # - El cuchillo está muy cerca (distancia < 30% del tamaño de la persona)
+                                if iou > 0 or distance < person_size * 0.3:
+                                    is_suspicious = True
+                                    suspicious_persons.add(i)
+                                    
+                                    # Agregar alerta
+                                    if f"PERSONA_SOSPECHOSA: Persona con {knife_label}" not in alerts:
+                                        alerts.append(f"PERSONA_SOSPECHOSA: Persona con {knife_label}")
+                                        detected_threats.append(f"Persona con {knife_label}")
+                                    break
+                            
+                            # Elegir color según si es sospechosa
+                            if is_suspicious:
+                                # Rojo/Naranja para personas sospechosas
+                                person_color = (0, 0, 255)  # Rojo
+                                skeleton_color = (255, 0, 0)  # Azul para el esqueleto (contraste)
+                            else:
+                                # Verde para personas normales
+                                person_color = (0, 255, 0)  # Verde
+                                skeleton_color = (255, 0, 0)  # Azul para el esqueleto
+                            
                             # Dibujar esqueleto
                             frame = draw_pose_skeleton(frame, bbox, keypoints)
                             
                             # Dibujar bbox de la persona
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            thickness = 3 if is_suspicious else 2
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), person_color, thickness)
+                            
+                            # Etiqueta especial para personas sospechosas
+                            if is_suspicious:
+                                cv2.putText(frame, "SOSPECHOSO", (x1, y1 - 30), 
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 3)
                     
                     except Exception as e:
                         continue
@@ -194,12 +292,16 @@ def detect_objects_and_pose(frame, model_objects, model_pose, model_custom=None)
 
 
 def main():
-    print("Sistema de Detección de Pose Básico")
-    print("Opciones:")
+    print("Sistema de Detección de Pose y Comportamiento Sospechoso")
+    print("Características:")
+    print("  - Detección de pose humana")
+    print("  - Detección de cuchillos y armas")
+    print("  - Identificación de personas sospechosas (personas con cuchillos)")
+    print("\nOpciones:")
     print("  - Presiona Enter para usar cámara web")
     print("  - O ingresa la ruta a un archivo de video")
     
-    source = input("Fuente de video [Enter para cámara]: ").strip()
+    source = input("\nFuente de video [Enter para cámara]: ").strip()
     
     if source == "":
         cap = cv2.VideoCapture(0)
@@ -210,7 +312,8 @@ def main():
         print("Error: No se pudo abrir la fuente de video")
         return
     
-    print("\n✅ Sistema activo. Presiona 'q' para salir\n")
+    print("\n✅ Sistema activo. Presiona 'q' para salir")
+    print("⚠️  Las personas con cuchillos serán marcadas como SOSPECHOSAS\n")
     
     while True:
         ret, frame = cap.read()
@@ -228,9 +331,14 @@ def main():
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             y_offset += 30
         
-        # Imprimir alertas críticas en consola
-        if threats:
-            print(f"⚠️ AMENAZAS DETECTADAS: {', '.join(threats)}")
+        # Imprimir alertas críticas en consola (solo alertas nuevas)
+        suspicious_alerts = [a for a in alerts if "PERSONA_SOSPECHOSA" in a]
+        if suspicious_alerts:
+            print(f"🚨 {suspicious_alerts[-1]}")
+        elif threats:
+            threat_alerts = [t for t in threats if "Persona con" not in t]
+            if threat_alerts:
+                print(f"⚠️ AMENAZAS DETECTADAS: {', '.join(set(threat_alerts))}")
         
         cv2.imshow("AI Vision - Detección de Pose", frame)
         
