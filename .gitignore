@@ -1,7 +1,7 @@
-# Modelos YOLOv8 (se descargan automáticamente)
+# Modelos YOLOv8 (se descargan automáticamente - muy grandes)
 *.pt
-!yolov8n.pt
-!yolov8n-pose.pt
+!yolov8n.pt  # Opcional: incluir modelo base si quieres
+!yolov8n-pose.pt  # Opcional: incluir modelo pose si quieres
 
 # Dataset (muy grande para GitHub)
 dataset/
