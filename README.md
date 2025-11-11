@@ -1,21 +1,29 @@
-# Sistema de Detección de Comportamientos Sospechosos con YOLOv8
+# Sistema de Videovigilancia Inteligente para Detección de Actividades Anómalas
 
-Sistema avanzado de visión por computadora que detecta comportamientos sospechosos, armas, cuchillos, forcejeos y merodeadores en tiempo real usando YOLOv8.
+Sistema avanzado de visión por computadora basado en el artículo de Sathiyavathi et al. (2021) que detecta comportamientos humanos anómalos en tiempo real usando CNN, YOLOv8-pose, clasificación de riesgo y análisis temporal.
 
-## 🚀 Características
+## 🚀 Características Principales
 
-- ✅ **Detección de Pose Humana Mejorada**: Visualización robusta de esqueletos y ejes corporales (sin bugs visuales)
+- ✅ **Detección de Pose Humana**: Extracción de 17 puntos clave corporales usando YOLOv8-pose
+- 🧠 **Clasificación de Actividades con CNN**: Reconocimiento de 5 actividades (caminar, sentarse, interactuar, saludar, hurto)
+- ⚠️ **Clasificación de Riesgo**: Sistema de 3 niveles (segura, anómala, delictiva)
+- 📊 **Análisis Temporal**: Detección de patrones anómalos mediante análisis de secuencias
+- 🗄️ **Base de Datos de Eventos**: Almacenamiento SQLite de todos los eventos detectados
+- 🌐 **API REST**: Endpoints para recibir y consultar alertas en tiempo real
 - ⚠️ **Detección de Amenazas**: Armas, cuchillos y objetos peligrosos
-- 🥊 **Detección de Forcejeos**: Identifica cuando personas están muy cerca
-- 🚶 **Detección de Merodeadores**: Identifica personas que permanecen inmóviles
-- 📊 **Optimizado para 60 FPS**: Rendimiento mejorado con procesamiento optimizado
-- 🎯 **Modelo Personalizado**: Soporte para modelos entrenados personalmente para mejor detección de cuchillos
 
 ## 📋 Requisitos
 
 ```bash
 pip install -r requirements.txt
 ```
+
+### Dependencias Principales
+
+- **YOLOv8** (Ultralytics): Detección de objetos y pose
+- **TensorFlow/Keras**: Modelo CNN para clasificación de actividades
+- **Flask**: API REST para alertas
+- **SQLite**: Base de datos de eventos (incluido en Python)
 
 ## 🎮 Uso Básico
 
@@ -24,179 +32,194 @@ python main.py
 ```
 
 El sistema:
-1. Cargará los modelos YOLOv8
-2. Te pedirá seleccionar cámara web o archivo de video
-3. Mostrará detecciones en tiempo real con visualización mejorada
-4. Presiona 'q' para salir
+1. Cargará los modelos YOLOv8 y el clasificador CNN de actividades
+2. Iniciará la API REST en `http://localhost:5000`
+3. Te pedirá seleccionar cámara web o archivo de video
+4. Te pedirá la ubicación (opcional)
+5. Mostrará detecciones en tiempo real con:
+   - Esqueletos de personas detectadas
+   - Actividades clasificadas
+   - Niveles de riesgo (segura/anómala/delictiva)
+   - Alertas automáticas para eventos críticos
+6. Presiona 'q' para salir
+
+## 🧠 Clasificación de Actividades
+
+El sistema clasifica las siguientes actividades basándose en los keypoints de pose:
+
+- **Caminar**: Movimiento normal de desplazamiento
+- **Sentarse**: Persona en posición sentada
+- **Interactuar**: Interacción entre personas
+- **Saludar**: Gestos de saludo
+- **Hurto**: Actividad delictiva detectada
+
+## ⚠️ Clasificación de Riesgo
+
+El sistema clasifica automáticamente el nivel de riesgo:
+
+- **Segura** (Verde): Actividades normales sin amenazas
+- **Anómala** (Naranja): Actividades sospechosas que requieren atención
+- **Delictiva** (Rojo): Actividades delictivas o presencia de armas
+
+## 📊 Análisis Temporal
+
+El sistema analiza secuencias de video para detectar:
+- Patrones de comportamiento inusuales
+- Cambios bruscos en actividades
+- Variabilidad en movimientos
+- Secuencias delictivas
+
+## 🗄️ Base de Datos
+
+Todos los eventos se almacenan automáticamente en `database/events.db` con:
+- Timestamp del evento
+- Actividad detectada
+- Nivel de riesgo
+- Confianza de la detección
+- Ubicación
+- Keypoints de la persona
+- Estado de alerta enviada
+
+## 🌐 API REST
+
+La API REST está disponible en `http://localhost:5000` con los siguientes endpoints:
+
+### Endpoints Disponibles
+
+- `GET /health` - Estado del servicio
+- `POST /alerts` - Enviar una alerta
+- `GET /alerts` - Obtener alertas (con filtros opcionales)
+- `GET /alerts/<id>` - Obtener una alerta específica
+- `DELETE /alerts/<id>` - Eliminar una alerta
+- `GET /stats` - Estadísticas del sistema
+
+### Ejemplo de Uso de la API
+
+```bash
+# Ver estado del servicio
+curl http://localhost:5000/health
+
+# Obtener alertas delictivas
+curl http://localhost:5000/alerts?risk_level=delictiva
+
+# Ver estadísticas
+curl http://localhost:5000/stats
+```
+
+## 🎯 Entrenar Modelo de Clasificación de Actividades
+
+Para entrenar el modelo CNN de clasificación de actividades:
+
+### 1. Preparar Datos
+
+Estructura de directorios esperada:
+
+```
+data/activities/
+├── caminar/
+│   ├── keypoints_001.npy
+│   ├── keypoints_002.npy
+│   └── ...
+├── sentarse/
+├── interactuar/
+├── saludar/
+└── hurto/
+```
+
+Cada archivo `.npy` debe contener keypoints de pose con forma `(17, 2)` o `(34,)`.
+
+### 2. Entrenar Modelo
+
+```bash
+python train_activity_model.py data/activities 20 32
+```
+
+Parámetros:
+- `data/activities`: Directorio con los datos
+- `20`: Número de épocas
+- `32`: Tamaño del batch
+
+El modelo entrenado se guardará en `models/activity_model.h5` y se cargará automáticamente en `main.py`.
 
 ## 🎯 Entrenar Modelo Personalizado para Detectar Cuchillos
 
-El modelo estándar de YOLOv8 puede confundir cuchillos con otros objetos. Para mejorar la precisión y detectar correctamente cuchillos:
-
-### Opción 1: Usar Dataset Público (Recomendado para empezar)
+Para mejorar la detección de cuchillos y armas:
 
 ```bash
-# Ver fuentes de datasets públicos
-python setup_dataset.py --sources
-
-# Ver instrucciones para Roboflow (más fácil)
+# Ver instrucciones
 python setup_dataset.py --roboflow
-```
 
-**Pasos rápidos con Roboflow:**
-1. Ve a https://universe.roboflow.com/
-2. Busca "knife detection" o "weapon detection"
-3. Descarga un dataset en formato YOLOv8
-4. Descomprime y ejecuta: `python prepare_dataset.py <ruta_del_dataset>`
-5. Ejecuta: `python train.py`
+# Preparar dataset
+python prepare_dataset.py <ruta_del_dataset>
 
-### Opción 2: Crear tu Propio Dataset
-
-```bash
-# 1. Crear estructura básica
-python setup_dataset.py --create-structure
-
-# 2. Instalar LabelMe para etiquetar
-pip install labelme
-labelme
-
-# 3. Etiquetar tus imágenes:
-#    - Abre tus imágenes en LabelMe
-#    - Dibuja rectángulos alrededor de cuchillos
-#    - Etiqueta como 'knife'
-#    - Guarda las anotaciones
-
-# 4. Organizar dataset
-python prepare_dataset.py raw_data
-
-# 5. Entrenar modelo
+# Entrenar modelo
 python train.py
 ```
 
-### Estructura del Dataset
+## 📁 Estructura del Proyecto
 
 ```
-dataset/
-├── train/
-│   ├── images/    # Imágenes de entrenamiento
-│   └── labels/    # Etiquetas YOLO (.txt)
-├── val/
-│   ├── images/    # Imágenes de validación
-│   └── labels/    # Etiquetas YOLO (.txt)
-└── data.yaml      # Configuración del dataset
-```
-
-### Verificar Dataset Antes de Entrenar
-
-```bash
-# Verificar estructura y contar anotaciones
-python train.py --check
-```
-
-### Entrenar Modelo
-
-```bash
-python train.py
-```
-
-El entrenamiento:
-- ✅ Verifica automáticamente la estructura del dataset
-- ✅ Cuenta las anotaciones disponibles
-- ✅ Usa YOLOv8n como modelo base
-- ✅ Entrena por 100 épocas con early stopping
-- ✅ Guarda el mejor modelo automáticamente
-- ✅ Copia `best.pt` a la raíz del proyecto
-
-El script `main.py` detectará automáticamente el modelo entrenado y lo usará para mejor detección de cuchillos.
-
-## 🔧 Mejoras en Detección de Pose
-
-Se han implementado mejoras significativas para evitar bugs visuales:
-
-- ✅ **Validación completa de keypoints**: Verifica coordenadas válidas antes de dibujar
-- ✅ **Filtrado por confianza**: Solo muestra puntos con confianza > 0.25
-- ✅ **Validación de bounding boxes**: Evita errores con coordenadas inválidas
-- ✅ **Manejo robusto de errores**: No interrumpe el flujo si hay problemas de visualización
-- ✅ **Validación de dimensiones**: Verifica que todo esté dentro del frame
-
-## 📊 Optimizaciones de Rendimiento
-
-El sistema está optimizado para alcanzar 60 FPS mediante:
-
-1. **Procesamiento a resolución reducida** (640px) mientras se mantiene la visualización original
-2. **Skip frames** para detección de pose (reduce carga computacional)
-3. **Configuración optimizada** de YOLOv8 (`verbose=False`, `imgsz` fijo)
-4. **Control de FPS** para mantener tasa constante
-
-### Ajustar Rendimiento
-
-En `main.py`, puedes modificar:
-
-```python
-PROCESS_RESOLUTION = 640  # Reducir a 320 para más FPS (menos precisión)
-SKIP_FRAMES = 1          # Procesar pose cada N frames
-TARGET_FPS = 60          # FPS objetivo
+YOLO-SuspiciousBehavior-Detection/
+├── main.py                      # Script principal
+├── train_activity_model.py      # Entrenamiento del modelo CNN
+├── train.py                     # Entrenamiento de detección de cuchillos
+├── models/
+│   ├── activity_classifier.py   # Clasificador CNN de actividades
+│   └── activity_model.h5        # Modelo entrenado (generado)
+├── utils/
+│   ├── risk_classifier.py       # Clasificador de riesgo
+│   └── temporal_analyzer.py    # Análisis temporal
+├── database/
+│   ├── event_db.py              # Gestor de base de datos
+│   └── events.db               # Base de datos SQLite (generada)
+├── api/
+│   └── alert_api.py             # API REST para alertas
+├── DOCUMENTACION.md              # Documentación del artículo base
+└── requirements.txt             # Dependencias
 ```
 
 ## 🎨 Visualización
 
-- **Verde**: Personas detectadas
-- **Rojo**: Amenazas (armas, cuchillos)
-- **Amarillo**: Otros objetos
-- **Azul**: Líneas del esqueleto (sin bugs visuales)
+El sistema muestra en pantalla:
+
+- **Verde**: Personas con actividades seguras
+- **Naranja**: Personas con actividades anómalas
+- **Rojo**: Personas con actividades delictivas o armas
+- **Azul**: Líneas del esqueleto
 - **Amarillo claro**: Puntos de articulación
 - **Rojo**: Eje central de la persona
 
-## 📝 Configuración de Detección
+## 📊 Estadísticas del Sistema
 
-Ajusta estos parámetros en `main.py` según tus necesidades:
+Al cerrar el sistema, se muestran estadísticas de:
+- Total de eventos detectados
+- Eventos por nivel de riesgo
+- Confianza promedio
+- Alertas enviadas
 
-```python
-MIN_FIGHT_DISTANCE = 100      # Distancia para considerar forcejeo (píxeles)
-STALLING_TIME = 5             # Tiempo para considerar merodeador (segundos)
-MAX_SPEED_NORMAL = 50         # Velocidad máxima normal (píxeles/frame)
-```
+También disponibles en tiempo real vía API REST: `GET /stats`
 
 ## 🔧 Solución de Problemas
 
-### Modelo no detecta cuchillos correctamente
-- **Solución**: Entrena un modelo personalizado siguiendo los pasos arriba
-- Asegúrate de tener suficientes imágenes etiquetadas (mínimo 100-200 por clase)
-- Usa datasets públicos de Roboflow para empezar rápido
-- Verifica que las etiquetas sean correctas
+### Modelo de actividades no encontrado
+- El sistema creará un modelo nuevo automáticamente
+- Para mejor precisión, entrena con datos reales usando `train_activity_model.py`
 
-### Bugs visuales en esqueletos (líneas fuera de lugar)
-- **Solucionado**: Las mejoras implementadas validan todos los keypoints antes de dibujar
-- Si aún ves problemas, reduce `PROCESS_RESOLUTION` para mejor precisión de pose
+### API REST no inicia
+- Verifica que el puerto 5000 esté disponible
+- Cambia el puerto en `main.py`: `AlertAPI(host='localhost', port=5001)`
 
 ### FPS bajo
-- Reduce `PROCESS_RESOLUTION` a 320 o 480
-- Aumenta `SKIP_FRAMES` a 2 o 3
-- Usa GPU si está disponible (configura `device=0` en train.py)
+- Reduce la resolución del video de entrada
+- Usa GPU si está disponible (configura en TensorFlow)
 
-### Error al cargar modelo personalizado
-- Verifica que `best.pt` esté en la raíz del proyecto
-- Asegúrate de que el modelo fue entrenado con las mismas clases que esperas
-- Ejecuta `python train.py --check` para verificar el dataset
+### Error al cargar modelos YOLOv8
+- Los modelos se descargarán automáticamente la primera vez
+- Verifica tu conexión a internet
 
-### Error durante entrenamiento
-- Verifica que tengas al menos 50-100 imágenes etiquetadas
-- Asegúrate de que las etiquetas estén en formato YOLO correcto
-- Verifica que `data.yaml` tenga la estructura correcta
-- Si no tienes GPU, cambia `device=0` a `device='cpu'` en train.py
+## 📚 Referencias
 
-## 📚 Scripts Disponibles
-
-- `main.py`: Script principal de detección
-- `train.py`: Entrenamiento del modelo personalizado
-- `prepare_dataset.py`: Preparar y organizar datasets
-- `setup_dataset.py`: Guía y herramientas para obtener datasets
-
-## 📚 Recursos
-
-- [Documentación YOLOv8](https://docs.ultralytics.com/)
-- [LabelMe - Herramienta de etiquetado](https://github.com/labelmeai/labelme)
-- [Roboflow Universe - Datasets públicos](https://universe.roboflow.com/)
+- Sathiyavathi, V., Jessey, M., Selvakumar, K., & SaiRamesh, L. (2021). Smart surveillance system for abnormal activity detection using CNN. In D. J. Hemanth (Ed.), Advances in Parallel Computing Technologies and Applications (pp. 341–349).
 
 ## ⚠️ Consideraciones Éticas y Legales
 
@@ -210,3 +233,9 @@ MAX_SPEED_NORMAL = 50         # Velocidad máxima normal (píxeles/frame)
 
 Proyecto educativo - Úsalo responsablemente
 
+## 👥 Integrantes
+
+- Maria Fernanda Tapia Yepez
+- Marianet Leon Astuhuaman
+- Mariana Emy Sanchez Galdos
+- Manuel Aarón Torres Tolentino

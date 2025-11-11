@@ -78,3 +78,4 @@ data.yaml
 config.local.yaml
 .env
 
+*.db
