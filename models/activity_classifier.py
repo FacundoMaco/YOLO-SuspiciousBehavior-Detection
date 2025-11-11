@@ -128,143 +128,59 @@ class ActivityClassifier:
         return keypoints.reshape(1, -1)  # Añadir dimensión de batch
     
     def predict_with_rules(self, keypoints):
-        """
-        Clasificación basada en reglas usando keypoints (sin entrenamiento necesario)
-        Funciona mejor que modelo aleatorio para demostración rápida
-        
-        Args:
-            keypoints: Array de keypoints de pose
-            
-        Returns:
-            dict con actividad predicha y probabilidades
-        """
+        """Clasificación simple basada en reglas de pose"""
         if keypoints is None or len(keypoints) == 0:
-            return {
-                'activity': 'caminar',
-                'confidence': 0.5,
-                'probabilities': {'caminar': 0.5, 'sentarse': 0.0, 'interactuar': 0.0, 'saludar': 0.0, 'hurto': 0.0}
-            }
+            return {'activity': 'caminar', 'confidence': 0.5}
         
-        keypoints = np.array(keypoints)
+        kpts = np.array(keypoints)
+        if kpts.shape == (17, 3):
+            kpts = kpts[:, :2]
+        elif len(kpts) == 34:
+            kpts = kpts.reshape(17, 2)
+        elif kpts.shape != (17, 2):
+            return {'activity': 'caminar', 'confidence': 0.5}
         
-        # Asegurar forma correcta
-        if keypoints.shape == (17, 2):
-            kpts = keypoints
-        elif keypoints.shape == (17, 3):
-            kpts = keypoints[:, :2]
-        elif len(keypoints) == 34:
-            kpts = keypoints.reshape(17, 2)
-        else:
-            return {
-                'activity': 'caminar',
-                'confidence': 0.5,
-                'probabilities': {'caminar': 0.5, 'sentarse': 0.0, 'interactuar': 0.0, 'saludar': 0.0, 'hurto': 0.0}
-            }
+        # Filtrar puntos válidos
+        valid = (kpts[:, 0] > 0) & (kpts[:, 1] > 0)
+        if np.sum(valid) < 5:
+            return {'activity': 'caminar', 'confidence': 0.5}
         
-        # Filtrar puntos válidos (no 0,0)
-        valid_mask = (kpts[:, 0] > 0) & (kpts[:, 1] > 0)
-        valid_kpts = kpts[valid_mask]
+        scores = {'caminar': 0.3, 'sentarse': 0.0, 'interactuar': 0.0, 'saludar': 0.0, 'hurto': 0.0}
         
-        if len(valid_kpts) < 5:
-            return {
-                'activity': 'caminar',
-                'confidence': 0.5,
-                'probabilities': {'caminar': 0.5, 'sentarse': 0.0, 'interactuar': 0.0, 'saludar': 0.0, 'hurto': 0.0}
-            }
-        
-        # Índices de keypoints importantes (COCO format)
-        # 0: nariz, 1-2: ojos, 3-4: orejas
-        # 5-6: hombros, 7-8: codos, 9-10: muñecas
-        # 11-12: cadera, 13-14: rodillas, 15-16: tobillos
-        
-        scores = {
-            'caminar': 0.0,
-            'sentarse': 0.0,
-            'interactuar': 0.0,
-            'saludar': 0.0,
-            'hurto': 0.0
-        }
-        
-        # REGLA 1: SENTARSE - rodillas y cadera en posición baja
-        if valid_mask[11] and valid_mask[12] and valid_mask[13] and valid_mask[14]:  # cadera y rodillas
+        # SENTARSE: cadera baja
+        if valid[11] and valid[12] and valid[13] and valid[14]:
             hip_y = (kpts[11, 1] + kpts[12, 1]) / 2
             knee_y = (kpts[13, 1] + kpts[14, 1]) / 2
-            if valid_mask[15] and valid_mask[16]:  # tobillos
-                ankle_y = (kpts[15, 1] + kpts[16, 1]) / 2
-                # Si las rodillas están cerca de los tobillos (piernas dobladas)
-                if abs(knee_y - ankle_y) < abs(hip_y - knee_y) * 0.5:
-                    scores['sentarse'] += 0.8
-                # Si la cadera está muy baja respecto a la altura total
-                if valid_mask[0]:  # nariz
-                    body_height = kpts[0, 1] - hip_y
-                    if hip_y > kpts[0, 1] + body_height * 0.3:
-                        scores['sentarse'] += 0.6
+            if valid[0]:  # nariz
+                if hip_y > kpts[0, 1] * 0.7:  # cadera baja
+                    scores['sentarse'] = 0.8
         
-        # REGLA 2: SALUDAR - brazo levantado
-        if valid_mask[5] and valid_mask[7] and valid_mask[9]:  # hombro izquierdo, codo, muñeca
-            # Brazo izquierdo levantado
-            if kpts[9, 1] < kpts[5, 1]:  # muñeca más arriba que hombro
-                scores['saludar'] += 0.7
-        if valid_mask[6] and valid_mask[8] and valid_mask[10]:  # hombro derecho, codo, muñeca
-            # Brazo derecho levantado
-            if kpts[10, 1] < kpts[6, 1]:  # muñeca más arriba que hombro
-                scores['saludar'] += 0.7
+        # SALUDAR: brazo levantado
+        if valid[5] and valid[9] and kpts[9, 1] < kpts[5, 1]:
+            scores['saludar'] = 0.7
+        if valid[6] and valid[10] and kpts[10, 1] < kpts[6, 1]:
+            scores['saludar'] = 0.7
         
-        # REGLA 3: INTERACTUAR - brazos extendidos hacia adelante o personas cerca
-        if valid_mask[5] and valid_mask[6] and valid_mask[9] and valid_mask[10]:
-            # Brazos extendidos horizontalmente
-            arm_extension = abs(kpts[9, 0] - kpts[5, 0]) + abs(kpts[10, 0] - kpts[6, 0])
-            if arm_extension > 100:  # Umbral ajustable
-                scores['interactuar'] += 0.6
+        # INTERACTUAR: brazos extendidos
+        if valid[5] and valid[6] and valid[9] and valid[10]:
+            arm_ext = abs(kpts[9, 0] - kpts[5, 0]) + abs(kpts[10, 0] - kpts[6, 0])
+            if arm_ext > 100:
+                scores['interactuar'] = 0.6
         
-        # REGLA 4: CAMINAR - posición vertical normal, piernas separadas
-        if valid_mask[11] and valid_mask[12] and valid_mask[15] and valid_mask[16]:
-            # Piernas separadas (tobillos separados)
-            leg_separation = abs(kpts[15, 0] - kpts[16, 0])
-            hip_width = abs(kpts[11, 0] - kpts[12, 0])
-            if leg_separation > hip_width * 1.2:  # Piernas más separadas que cadera
-                scores['caminar'] += 0.7
-            # Posición vertical normal
-            if valid_mask[0]:  # nariz
-                body_vertical = abs(kpts[0, 0] - (kpts[11, 0] + kpts[12, 0]) / 2)
-                if body_vertical < 30:  # Cuerpo relativamente vertical
-                    scores['caminar'] += 0.5
+        # CAMINAR: piernas separadas
+        if valid[15] and valid[16]:
+            leg_sep = abs(kpts[15, 0] - kpts[16, 0])
+            if leg_sep > 30:
+                scores['caminar'] = 0.7
         
-        # REGLA 5: HURTO - movimientos rápidos o postura agachada sospechosa
-        # (Esta es más difícil de detectar solo con pose, se combina con otros factores)
-        if valid_mask[0] and valid_mask[11] and valid_mask[12]:
-            # Postura agachada
-            if kpts[0, 1] > (kpts[11, 1] + kpts[12, 1]) / 2 + 50:
-                scores['hurto'] += 0.4
-            # Brazos en posición sospechosa (cerca del cuerpo pero extendidos)
-            if valid_mask[9] and valid_mask[10]:
-                arm_position = (kpts[9, 1] + kpts[10, 1]) / 2
-                hip_y = (kpts[11, 1] + kpts[12, 1]) / 2
-                if abs(arm_position - hip_y) < 30:  # Brazos cerca de la cadera
-                    scores['hurto'] += 0.3
+        # Normalizar
+        total = sum(scores.values())
+        if total > 0:
+            for k in scores:
+                scores[k] /= total
         
-        # Normalizar scores
-        total_score = sum(scores.values())
-        if total_score > 0:
-            for key in scores:
-                scores[key] = scores[key] / total_score
-        else:
-            # Si no hay match, default a caminar
-            scores['caminar'] = 0.6
-            scores['sentarse'] = 0.1
-            scores['interactuar'] = 0.1
-            scores['saludar'] = 0.1
-            scores['hurto'] = 0.1
-        
-        # Obtener actividad con mayor score
         activity = max(scores, key=scores.get)
-        confidence = scores[activity]
-        
-        return {
-            'activity': activity,
-            'confidence': confidence,
-            'probabilities': scores
-        }
+        return {'activity': activity, 'confidence': scores[activity]}
     
     def predict(self, keypoints):
         """

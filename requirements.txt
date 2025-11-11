@@ -14,13 +14,16 @@ scikit-learn>=1.3.0
 # Para API REST
 flask>=2.3.0
 flask-cors>=4.0.0
-requests>=2.31.0  # Para enviar alertas a apps externas (Lovable)
+requests>=2.31.0  # Para enviar alertas a sistemas externos mediante HTTP
 
 # Para base de datos
 # sqlite3 está incluido en Python estándar, no necesita instalación
 
 # Para análisis temporal y utilidades
 scipy>=1.11.0
+
+# Para Roboflow
+roboflow>=1.1.0
 
 # Opcional: Para etiquetado de imágenes
 # labelme>=5.0.0

@@ -44,7 +44,7 @@ class AlertAPI:
             host: Host donde escuchar
             port: Puerto donde escuchar
             enable_cors: Habilitar CORS para peticiones cross-origin
-            external_api_url: URL de la app externa (Lovable) para enviar alertas
+            external_api_url: URL de la app externa para enviar alertas (opcional)
             external_api_key: API key opcional para autenticación
         """
         if not FLASK_AVAILABLE:
@@ -74,9 +74,9 @@ class AlertAPI:
         # Callback para cuando se recibe una alerta
         self.alert_callback = None
         
-        # Configuración para enviar a app externa (Lovable)
-        self.external_api_url = external_api_url or os.getenv('LOVABLE_API_URL', None)
-        self.external_api_key = external_api_key or os.getenv('LOVABLE_API_KEY', None)
+        # Configuración para enviar a app externa (opcional)
+        self.external_api_url = external_api_url or os.getenv('EXTERNAL_API_URL', None)
+        self.external_api_key = external_api_key or os.getenv('EXTERNAL_API_KEY', None)
         
         if self.external_api_url:
             print(f"📡 Configurado para enviar alertas a: {self.external_api_url}")
@@ -256,7 +256,7 @@ class AlertAPI:
                    frame_image_path: Optional[str] = None):
         """
         Envía una alerta a través de la API
-        Si hay external_api_url configurado, envía a la app externa (Lovable)
+        Si hay external_api_url configurado, envía a la app externa
         
         Args:
             activity: Actividad detectada
@@ -289,7 +289,7 @@ class AlertAPI:
         }
         self.pending_alerts.append(local_alert)
         
-        # Enviar a app externa (Lovable) si está configurado
+        # Enviar a app externa si está configurado
         if self.external_api_url and REQUESTS_AVAILABLE:
             try:
                 self._send_to_external_api(alert_data)
@@ -300,7 +300,7 @@ class AlertAPI:
     
     def _transform_alert_for_supabase(self, alert_data: dict) -> dict:
         """
-        Transforma los datos de alerta al formato que espera Supabase/Lovable
+        Transforma los datos de alerta al formato estándar para sistemas externos
         
         Args:
             alert_data: Datos de alerta del sistema CV
@@ -372,7 +372,7 @@ class AlertAPI:
     
     def _send_to_external_api(self, alert_data: dict):
         """
-        Envía una alerta a la app externa (Lovable/Supabase) mediante HTTP POST
+        Envía una alerta a la app externa mediante HTTP POST
         
         Args:
             alert_data: Datos de la alerta a enviar

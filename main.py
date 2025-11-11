@@ -1,22 +1,14 @@
 """
 Sistema de Videovigilancia Inteligente para Detección de Actividades Anómalas
 Basado en el artículo de Sathiyavathi et al. (2021)
-Integra CNN, OpenPose (YOLOv8-pose), clasificación de riesgo y API REST
+Integra CNN, YOLOv8-pose, clasificación de riesgo y API REST
 """
 
 import cv2
 import numpy as np
 from ultralytics import YOLO
-import time
 from datetime import datetime
 import os
-
-# Importar módulos del sistema
-from models.activity_classifier import ActivityClassifier
-from utils.risk_classifier import RiskClassifier
-from utils.temporal_analyzer import TemporalAnalyzer
-from database.event_db import EventDatabase
-from api.alert_api import AlertAPI
 
 # ============================================================================
 # CONFIGURACIÓN Y CARGA DE MODELOS
@@ -24,144 +16,85 @@ from api.alert_api import AlertAPI
 
 print("=" * 70)
 print("SISTEMA DE VIDEOVIGILANCIA INTELIGENTE")
-print("Prevención de Robos, Asaltos y Ataques")
 print("Detección de Actividades Anómalas usando CNN")
+print("Basado en Sathiyavathi et al. (2021)")
 print("=" * 70)
-print()
 
 # Cargar modelos YOLOv8
-print("📦 Cargando modelos YOLOv8...")
+print("\nCargando modelos...")
+model_pose = YOLO("yolov8n-pose.pt")
+print("Modelo de pose cargado")
 
-# Modelo de pose para detectar personas
-try:
-    model_pose = YOLO("yolov8n-pose.pt")
-    print("✅ Modelo de pose cargado")
-except Exception as e:
-    print(f"❌ Error al cargar modelo de pose: {e}")
-    model_pose = YOLO("yolov8n-pose.pt")
+# Modelo para detección general de objetos
+model_objects = YOLO("yolov8n.pt")
+print("Modelo de objetos cargado")
 
-# Modelo personalizado para detectar armas (cuchillos, pistolas, etc.)
+# Modelo entrenado para detección de armas (prioritario)
 model_weapons = None
-try:
-    model_weapons = YOLO("best.pt")
-    print("✅ Modelo de detección de armas cargado")
-except:
-    print("⚠️  Modelo personalizado de armas no encontrado (best.pt)")
-    print("   El sistema funcionará solo con detección de pose y actividades")
-    print("   Para mejor detección de armas, ejecuta train.py para entrenar un modelo")
 
-# Cargar clasificador de actividades CNN
-print("\n📦 Cargando clasificador de actividades CNN...")
+# Intentar cargar desde Roboflow primero
 try:
-    activity_classifier = ActivityClassifier(model_path='models/activity_model.h5')
-    print("✅ Clasificador de actividades CNN cargado (modelo entrenado)")
+    from roboflow import Roboflow
+    roboflow_api_key = os.getenv("ROBOFLOW_API_KEY", "")
+    if roboflow_api_key:
+        print("Intentando cargar modelo desde Roboflow...")
+        rf = Roboflow(api_key=roboflow_api_key)
+        project = rf.workspace("my-first-project-lchlk").project("1")
+        model_weapons = project.version(1).model
+        print("Modelo de armas cargado desde Roboflow (my-first-project-lchlk/1)")
+        print("   Nota: Configura ROBOFLOW_API_KEY como variable de entorno si aún no lo has hecho")
+    else:
+        print("ROBOFLOW_API_KEY no configurada, intentando modelo local...")
+        raise ValueError("API key no configurada")
 except Exception as e:
-    print(f"⚠️  Modelo de actividades no encontrado")
-    print(f"   Usando clasificación basada en reglas (sin entrenamiento necesario)")
-    activity_classifier = ActivityClassifier()
+    print(f"No se pudo cargar desde Roboflow: {e}")
+    print("Intentando cargar modelo local...")
+    
+    # Si falla Roboflow, intentar cargar modelo local
+    weapons_model_paths = [
+        "best.pt",  # Raíz del proyecto
+    ]
+    
+    # Buscar en runs/ también
+    try:
+        import glob
+        runs_models = glob.glob("runs/**/weights/best.pt", recursive=True)
+        weapons_model_paths.extend(runs_models[:3])  # Agregar hasta 3 modelos encontrados
+    except:
+        pass
+    
+    for path in weapons_model_paths:
+        if os.path.exists(path):
+            try:
+                model_weapons = YOLO(path)
+                print(f"Modelo de armas entrenado cargado desde: {path}")
+                break
+            except Exception as e:
+                print(f"Advertencia: Error al cargar {path}: {e}")
+                continue
 
-# Inicializar componentes del sistema
-print("\n📦 Inicializando componentes del sistema...")
-risk_classifier = RiskClassifier()
-temporal_analyzer = TemporalAnalyzer(sequence_length=30)
-event_database = EventDatabase()
+if model_weapons is None:
+    print("Advertencia: No se encontró modelo de armas entrenado")
+    print("   Usando detección con modelo general (knife, scissors)")
+    print("   Para usar Roboflow, configura la variable de entorno ROBOFLOW_API_KEY")
+    print("   O coloca tu modelo como 'best.pt' en la raíz del proyecto")
 
-# Configurar API REST con opción de enviar a app externa (Lovable/Supabase)
-try:
-    from config_lovable import LOVABLE_API_URL, LOVABLE_API_KEY, CV_API_KEY
-    print(f"📋 Configuración cargada desde config_lovable.py")
-except ImportError:
-    # Si no existe config_lovable.py, usar variables de entorno
-    LOVABLE_API_URL = os.getenv('LOVABLE_API_URL', None)
-    LOVABLE_API_KEY = os.getenv('LOVABLE_API_KEY', None)
-    CV_API_KEY = None
+# Clases que se consideran armas en el modelo general (como respaldo)
+WEAPON_CLASSES = ['knife', 'scissors']  # YOLOv8n puede detectar estos objetos
 
-# Mostrar información de configuración
-if LOVABLE_API_URL and LOVABLE_API_URL != 'https://TU_PROYECTO.supabase.co/functions/v1/receive-cv-alert':
-    print(f"📡 Configurado para enviar alertas a: {LOVABLE_API_URL}")
-    if LOVABLE_API_KEY:
-        print(f"🔑 API Key configurado: {'*' * 20}...{LOVABLE_API_KEY[-8:]}")
-else:
-    print("⚠️  LOVABLE_API_URL no configurada")
-    print("   Edita config_lovable.py y configura tu URL de Supabase")
-    print("   O exporta: export LOVABLE_API_URL='https://tu-proyecto.supabase.co/functions/v1/receive-cv-alert'")
-
-alert_api = AlertAPI(
-    host='localhost', 
-    port=5000,
-    external_api_url=LOVABLE_API_URL if LOVABLE_API_URL and 'TU_PROYECTO' not in LOVABLE_API_URL else None,
-    external_api_key=LOVABLE_API_KEY
-)
-
-# Iniciar API REST en thread separado (si Flask está disponible)
-print("\n🌐 Iniciando API REST...")
-try:
-    alert_api.run(threaded=True)
-except Exception as e:
-    print(f"⚠️  API REST no disponible: {e}")
-    print("   El sistema funcionará sin API REST")
-
-print("\n✅ Todos los componentes cargados correctamente\n")
+print("\nSistema listo\n")
 
 # ============================================================================
 # FUNCIONES AUXILIARES
 # ============================================================================
 
-def draw_pose_skeleton(frame, bbox, keypoints):
-    """Dibuja el esqueleto de la persona con sus articulaciones"""
-    if bbox is None or len(keypoints) == 0:
-        return frame
-    
-    try:
-        x1, y1, x2, y2 = bbox
-        frame_h, frame_w = frame.shape[:2]
-        
-        # Validar bbox
-        if x1 >= x2 or y1 >= y2 or x1 < 0 or y1 < 0 or x2 > frame_w or y2 > frame_h:
-            return frame
-        
-        # Conexiones del esqueleto (COCO pose format - 17 puntos clave)
-        skeleton_connections = [
-            [0, 1], [0, 2], [1, 3], [2, 4],  # Cabeza
-            [5, 6], [5, 7], [7, 9], [6, 8], [8, 10],  # Brazos
-            [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],  # Piernas
-            [5, 11], [6, 12]  # Torso
-        ]
-        
-        # Dibujar conexiones primero
-        for connection in skeleton_connections:
-            if connection[0] < len(keypoints) and connection[1] < len(keypoints):
-                pt1 = keypoints[connection[0]]
-                pt2 = keypoints[connection[1]]
-                
-                # Validar que ambos puntos sean válidos (no 0,0)
-                if (pt1[0] > 0 and pt1[1] > 0 and pt2[0] > 0 and pt2[1] > 0):
-                    pt1_int = (int(pt1[0]), int(pt1[1]))
-                    pt2_int = (int(pt2[0]), int(pt2[1]))
-                    
-                    # Validar que estén dentro del frame
-                    if (0 <= pt1_int[0] < frame_w and 0 <= pt1_int[1] < frame_h and
-                        0 <= pt2_int[0] < frame_w and 0 <= pt2_int[1] < frame_h):
-                        cv2.line(frame, pt1_int, pt2_int, (255, 0, 0), 2)
-        
-        # Dibujar puntos clave
-        for kpt in keypoints:
-            if kpt[0] > 0 and kpt[1] > 0:
-                x, y = int(kpt[0]), int(kpt[1])
-                if 0 <= x < frame_w and 0 <= y < frame_h:
-                    cv2.circle(frame, (x, y), 5, (0, 255, 255), -1)
-        
-        # Dibujar centro de la persona (eje)
-        center_x = int((x1 + x2) / 2)
-        center_y = int((y1 + y2) / 2)
-        if 0 <= center_x < frame_w and 0 <= center_y < frame_h:
-            cv2.circle(frame, (center_x, center_y), 8, (0, 0, 255), -1)
-    
-    except Exception as e:
-        pass
-    
-    return frame
-
+def calculate_distance(box1, box2):
+    """Calcula distancia entre centros de dos bounding boxes"""
+    x1_1, y1_1, x2_1, y2_1 = box1
+    x1_2, y1_2, x2_2, y2_2 = box2
+    center1 = ((x1_1 + x2_1) / 2, (y1_1 + y2_1) / 2)
+    center2 = ((x1_2 + x2_2) / 2, (y1_2 + y2_2) / 2)
+    return np.sqrt((center1[0] - center2[0])**2 + (center1[1] - center2[1])**2)
 
 def calculate_iou(box1, box2):
     """Calcula Intersection over Union (IoU) entre dos bounding boxes"""
@@ -186,326 +119,326 @@ def calculate_iou(box1, box2):
     
     return intersection / union
 
-
-def calculate_distance(box1, box2):
-    """Calcula la distancia entre los centros de dos bounding boxes"""
-    x1_1, y1_1, x2_1, y2_1 = box1
-    x1_2, y1_2, x2_2, y2_2 = box2
+def draw_simple_skeleton(frame, keypoints):
+    """Dibuja esqueleto simplificado de la persona"""
+    if keypoints is None or len(keypoints) == 0:
+        return frame
     
-    center1_x = (x1_1 + x2_1) / 2
-    center1_y = (y1_1 + y2_1) / 2
-    center2_x = (x2_2 + x1_2) / 2
-    center2_y = (y2_2 + y1_2) / 2
+    try:
+        # Conexiones principales del esqueleto
+        connections = [
+            [5, 7], [7, 9],   # Brazo izquierdo
+            [6, 8], [8, 10],  # Brazo derecho
+            [11, 13], [13, 15],  # Pierna izquierda
+            [12, 14], [14, 16],  # Pierna derecha
+            [5, 6], [11, 12], [5, 11], [6, 12]  # Torso
+        ]
+        
+        frame_h, frame_w = frame.shape[:2]
+        
+        # Dibujar conexiones
+        for conn in connections:
+            if conn[0] < len(keypoints) and conn[1] < len(keypoints):
+                pt1 = keypoints[conn[0]]
+                pt2 = keypoints[conn[1]]
+                
+                if pt1[0] > 0 and pt1[1] > 0 and pt2[0] > 0 and pt2[1] > 0:
+                    pt1_int = (int(pt1[0]), int(pt1[1]))
+                    pt2_int = (int(pt2[0]), int(pt2[1]))
+                    
+                    if (0 <= pt1_int[0] < frame_w and 0 <= pt1_int[1] < frame_h and
+                        0 <= pt2_int[0] < frame_w and 0 <= pt2_int[1] < frame_h):
+                        cv2.line(frame, pt1_int, pt2_int, (0, 255, 255), 2)
+        
+        # Dibujar puntos clave principales
+        for i, kpt in enumerate(keypoints):
+            if kpt[0] > 0 and kpt[1] > 0:
+                x, y = int(kpt[0]), int(kpt[1])
+                if 0 <= x < frame_w and 0 <= y < frame_h:
+                    cv2.circle(frame, (x, y), 4, (0, 255, 0), -1)
+    except:
+        pass
     
-    distance = np.sqrt((center1_x - center2_x)**2 + (center1_y - center2_y)**2)
-    return distance
-
+    return frame
 
 # ============================================================================
 # FUNCIÓN PRINCIPAL DE DETECCIÓN
 # ============================================================================
 
-def detect_and_classify(frame, model_pose, model_weapons=None,
-                       activity_classifier=None, risk_classifier=None,
-                       temporal_analyzer=None, event_database=None, alert_api=None,
-                       frame_number=0, location="Desconocida"):
-    """
-    Detecta personas, armas, clasifica actividades y genera alertas
-    Enfocado en prevenir robos, asaltos y ataques
-    
-    Returns:
-        frame: Frame procesado con anotaciones
-        detected_events: Lista de eventos detectados
-    """
-    detected_events = []
-    weapons_detected = []  # Lista de armas detectadas [(bbox, label, conf)]
-    person_data = {}  # {person_id: {keypoints, bbox, has_weapon}}
+def detect_and_classify(frame, model_pose, model_objects, model_weapons=None, weapon_classes=None):
+    """Detecta personas, objetos y armas, genera alertas"""
+    weapons_detected = []
+    objects_detected = []
+    num_people = 0
     
     try:
-        # 1. Detección de armas (cuchillos, pistolas, etc.)
-        if model_weapons is not None:
-            results_weapons = model_weapons(frame, verbose=False, conf=0.3)
-            for r in results_weapons:
-                if r.boxes is not None and len(r.boxes) > 0:
-                    for box in r.boxes:
-                        class_id = int(box.cls[0])
-                        confidence = float(box.conf[0])
-                        label = model_weapons.names[class_id]
-                        
-                        if confidence > 0.3:
-                            x1, y1, x2, y2 = map(int, box.xyxy[0])
-                            bbox = (x1, y1, x2, y2)
-                            
-                            # Cualquier arma detectada
-                            weapons_detected.append((bbox, label, confidence))
-                            
-                            # Dibujar arma detectada
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                            cv2.putText(frame, f"ARMA: {label} {confidence:.2f}", 
-                                      (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 3)
+        # Áreas donde ya se detectaron armas (para evitar duplicados)
+        weapon_areas = []
         
-        # 2. Detección de pose y clasificación de actividades
-        results_pose = model_pose(frame, verbose=False, conf=0.5)
+        # 1. Detección de armas con modelo entrenado (prioritario) - SIEMPRE ROJO
+        if model_weapons is not None:
+            try:
+                # Para modelos de Roboflow, usar predict() con formato JSON
+                if hasattr(model_weapons, 'predict') and not hasattr(model_weapons, 'names'):
+                    # Modelo de Roboflow - guardar frame temporalmente y predecir
+                    import tempfile
+                    temp_path = tempfile.mktemp(suffix='.jpg')
+                    cv2.imwrite(temp_path, frame)
+                    
+                    try:
+                        predictions_json = model_weapons.predict(temp_path, confidence=10, overlap=30).json()
+                        if 'predictions' in predictions_json:
+                            for prediction in predictions_json['predictions']:
+                                x = prediction.get('x', 0)
+                                y = prediction.get('y', 0)
+                                width = prediction.get('width', 0)
+                                height = prediction.get('height', 0)
+                                confidence = float(prediction.get('confidence', 0))
+                                label = prediction.get('class', 'weapon')
+                                
+                                x1 = int(x - width / 2)
+                                y1 = int(y - height / 2)
+                                x2 = int(x + width / 2)
+                                y2 = int(y + height / 2)
+                                
+                                if confidence > 0.1:
+                                    bbox = (x1, y1, x2, y2)
+                                    weapons_detected.append((bbox, label, confidence))
+                                    weapon_areas.append(bbox)
+                                    
+                                    # Dibujar arma detectada (ROJO)
+                                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 4)
+                                    text = f"ARMA: {label.upper()} {confidence:.2f}"
+                                    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                                    cv2.rectangle(frame, (x1-2, y1-25), (x1 + text_size[0] + 5, y1-5), (0, 0, 0), -1)
+                                    cv2.putText(frame, text, (x1, y1 - 10), 
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                else:
+                    # Modelo YOLO estándar
+                    results_weapons = model_weapons(frame, verbose=False, conf=0.1, imgsz=640)
+                    for r in results_weapons:
+                        if r.boxes is not None and len(r.boxes) > 0:
+                            for box in r.boxes:
+                                confidence = float(box.conf[0])
+                                if confidence > 0.1:
+                                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                                    class_id = int(box.cls[0])
+                                    label = model_weapons.names[class_id]
+                                    
+                                    bbox = (x1, y1, x2, y2)
+                                    weapons_detected.append((bbox, label, confidence))
+                                    weapon_areas.append(bbox)
+                                    
+                                    # Dibujar arma detectada (ROJO)
+                                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 4)
+                                    text = f"ARMA: {label.upper()} {confidence:.2f}"
+                                    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                                    cv2.rectangle(frame, (x1-2, y1-25), (x1 + text_size[0] + 5, y1-5), (0, 0, 0), -1)
+                                    cv2.putText(frame, text, (x1, y1 - 10), 
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            except Exception as e:
+                print(f"Error en detección de armas: {e}")
+        
+        # 2. Detección de objetos generales (excluir áreas donde ya hay armas detectadas)
+        results_objects = model_objects(frame, verbose=False, conf=0.25, imgsz=640)
+        for r in results_objects:
+            if r.boxes is not None and len(r.boxes) > 0:
+                for box in r.boxes:
+                    confidence = float(box.conf[0])
+                    if confidence > 0.25:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        class_id = int(box.cls[0])
+                        label = model_objects.names[class_id]
+                        
+                        # Filtrar personas (ya las detectamos con pose)
+                        if label == 'person':
+                            continue
+                        
+                        # Verificar si esta área ya fue detectada como arma
+                        is_weapon_area = False
+                        for w_bbox in weapon_areas:
+                            iou = calculate_iou((x1, y1, x2, y2), w_bbox)
+                            if iou > 0.2:  # Si hay superposición, es un área de arma
+                                is_weapon_area = True
+                                break
+                        
+                        if is_weapon_area:
+                            continue  # Saltar, ya está marcado como arma
+                        
+                        # Verificar si es un arma del modelo general (solo si no hay modelo entrenado)
+                        is_weapon = False
+                        if model_weapons is None and weapon_classes and label.lower() in weapon_classes:
+                            is_weapon = True
+                        
+                        if is_weapon:
+                            # Es un arma detectada por modelo general (rojo)
+                            weapons_detected.append(((x1, y1, x2, y2), label, confidence))
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 4)
+                            text = f"ARMA: {label.upper()} {confidence:.2f}"
+                            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                            cv2.rectangle(frame, (x1-2, y1-25), (x1 + text_size[0] + 5, y1-5), (0, 0, 0), -1)
+                            cv2.putText(frame, text, (x1, y1 - 10), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        else:
+                            # Es un objeto normal (azul)
+                            objects_detected.append(((x1, y1, x2, y2), label, confidence))
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                            text = f"{label.upper()} {confidence:.2f}"
+                            cv2.putText(frame, text, (x1, y1 - 5), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+        
+        # 3. Detección de personas con pose
+        results_pose = model_pose(frame, verbose=False, conf=0.5, imgsz=416)
         
         for r in results_pose:
-            if r.keypoints is not None and r.boxes is not None and len(r.boxes) > 0:
-                for i in range(min(len(r.boxes), len(r.keypoints.data))):
+            if r.keypoints is not None and r.boxes is not None:
+                num_people = len(r.boxes)
+                
+                for i in range(len(r.boxes)):
                     try:
-                        # Obtener bbox y keypoints
                         box = r.boxes[i]
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         bbox = (x1, y1, x2, y2)
-                        person_id = i
                         
                         # Obtener keypoints
                         kpts = r.keypoints.data[i]
                         if hasattr(kpts, 'cpu'):
-                            keypoints_data = kpts.cpu().numpy()
+                            keypoints = kpts.cpu().numpy()[:, :2]
                         else:
-                            keypoints_data = np.array(kpts)
+                            keypoints = np.array(kpts)[:, :2]
                         
-                        # Extraer coordenadas (x, y)
-                        if keypoints_data.shape[1] >= 3:
-                            keypoints = keypoints_data[:, :2]
-                            confidences = keypoints_data[:, 2]
-                        elif keypoints_data.shape[1] >= 2:
-                            keypoints = keypoints_data[:, :2]
-                            confidences = np.ones(len(keypoints))
+                        # Verificar si tiene arma cerca
+                        has_weapon = False
+                        person_size = np.sqrt((x2 - x1) * (y2 - y1))
+                        for weapon_bbox, weapon_label, weapon_conf in weapons_detected:
+                            distance = calculate_distance(bbox, weapon_bbox)
+                            if distance < person_size * 0.5 or distance < 100:
+                                has_weapon = True
+                                break
+                        
+                        # Dibujar esqueleto
+                        frame = draw_simple_skeleton(frame, keypoints)
+                        
+                        # Dibujar bbox según si tiene arma
+                        if has_weapon:
+                            # Rojo si tiene arma
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                            text = f"PERSONA {i+1} - ARMA DETECTADA"
+                            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                            cv2.rectangle(frame, (x1, y1 - 30), (x1 + text_size[0] + 5, y1), (0, 0, 0), -1)
+                            cv2.putText(frame, text, (x1, y1 - 10), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                         else:
-                            continue
-                        
-                        # Filtrar keypoints válidos
-                        valid_mask = confidences > 0.25
-                        valid_count = np.sum(valid_mask)
-                        
-                        if valid_count >= 5:
-                            keypoints[~valid_mask] = [0, 0]
-                            
-                            # Verificar si tiene arma cerca
-                            has_weapon = False
-                            for weapon_bbox, weapon_label, weapon_conf in weapons_detected:
-                                iou = calculate_iou(bbox, weapon_bbox)
-                                distance = calculate_distance(bbox, weapon_bbox)
-                                person_size = np.sqrt((x2 - x1) * (y2 - y1))
-                                
-                                # Arma está cerca si está dentro del bbox o muy cerca
-                                if iou > 0 or distance < person_size * 0.3:
-                                    has_weapon = True
-                                    break
-                            
-                            # Clasificar actividad usando CNN
-                            activity_result = None
-                            if activity_classifier:
-                                activity_result = activity_classifier.predict(keypoints)
-                                activity = activity_result['activity']
-                                activity_confidence = activity_result['confidence']
-                            else:
-                                # Fallback: clasificación simple basada en pose
-                                activity = 'caminar'  # Por defecto
-                                activity_confidence = 0.5
-                            
-                            # Actualizar análisis temporal
-                            if temporal_analyzer:
-                                temporal_analyzer.update_sequence(person_id, activity, activity_confidence)
-                                temporal_analysis = temporal_analyzer.analyze_sequence(person_id)
-                            else:
-                                temporal_analysis = None
-                            
-                            # Clasificar nivel de riesgo
-                            if risk_classifier:
-                                risk_result = risk_classifier.classify_risk(
-                                    activity, has_weapon, activity_confidence
-                                )
-                                risk_level = risk_result['risk_level']
-                                risk_color = risk_classifier.get_risk_color(risk_level)
-                                risk_label = risk_classifier.get_risk_label(risk_level)
-                            else:
-                                risk_level = 'segura' if not has_weapon else 'delictiva'
-                                risk_color = (0, 255, 0) if not has_weapon else (0, 0, 255)
-                                risk_label = 'SEGURA' if not has_weapon else 'DELICTIVA'
-                            
-                            # Guardar datos de la persona
-                            person_data[person_id] = {
-                                'keypoints': keypoints.tolist(),
-                                'bbox': bbox,
-                                'has_weapon': has_weapon,
-                                'activity': activity,
-                                'activity_confidence': activity_confidence,
-                                'risk_level': risk_level
-                            }
-                            
-                            # Dibujar esqueleto
-                            frame = draw_pose_skeleton(frame, bbox, keypoints)
-                            
-                            # Dibujar bbox con color según riesgo
-                            thickness = 3 if risk_level == 'delictiva' else 2
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), risk_color, thickness)
-                            
-                            # Mostrar información
-                            info_text = f"{risk_label} | {activity.upper()}"
-                            cv2.putText(frame, info_text, (x1, y1 - 10), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, risk_color, 2)
-                            
-                            # Mostrar número de personas
-                            cv2.putText(frame, f"Persona {person_id + 1}", (x1, y2 + 20), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                            
-                            # Crear evento si es anómala o delictiva
-                            if risk_level in ['anómala', 'delictiva']:
-                                event = {
-                                    'person_id': person_id,
-                                    'activity': activity,
-                                    'risk_level': risk_level,
-                                    'confidence': activity_confidence,
-                                    'has_weapon': has_weapon,
-                                    'location': location,
-                                    'timestamp': datetime.now().isoformat(),
-                                    'keypoints': keypoints.tolist()
-                                }
-                                detected_events.append(event)
-                                
-                                # Guardar en base de datos
-                                if event_database:
-                                    event_id = event_database.insert_event(
-                                        activity=activity,
-                                        risk_level=risk_level,
-                                        confidence=activity_confidence,
-                                        person_id=person_id,
-                                        location=location,
-                                        has_weapon=has_weapon,
-                                        keypoints=keypoints.tolist()
-                                    )
-                                    
-                                    # Enviar alerta si es delictiva o anómala con alta confianza
-                                    if risk_level == 'delictiva' or (risk_level == 'anómala' and activity_confidence > 0.7):
-                                        if alert_api:
-                                            alert_api.send_alert(
-                                                activity=activity,
-                                                risk_level=risk_level,
-                                                confidence=activity_confidence,
-                                                person_id=person_id,
-                                                location=location,
-                                                has_weapon=has_weapon,
-                                                keypoints=keypoints.tolist()
-                                            )
-                                            event_database.mark_alert_sent(event_id)
+                            # Verde si no tiene arma
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(frame, f"Persona {i+1}", (x1, y1 - 10), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     
-                    except Exception as e:
+                    except:
                         continue
         
-        # Mostrar estadísticas en pantalla
-        num_people = len(person_data)
-        if num_people > 0:
-            cv2.putText(frame, f"Personas detectadas: {num_people}", (10, 30), 
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        # Mostrar estadísticas en pantalla (con fondo para mejor visibilidad)
+        stats_y = 30
+        stats_spacing = 30
         
-        if detected_events:
-            cv2.putText(frame, f"Eventos detectados: {len(detected_events)}", (10, 60), 
+        # Fondo para estadísticas
+        cv2.rectangle(frame, (5, 5), (350, 100), (0, 0, 0), -1)
+        cv2.rectangle(frame, (5, 5), (350, 100), (255, 255, 255), 2)
+        
+        # Personas detectadas
+        cv2.putText(frame, f"Personas: {num_people}", (10, stats_y), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        # Objetos detectados
+        if objects_detected:
+            cv2.putText(frame, f"Objetos: {len(objects_detected)}", (10, stats_y + stats_spacing), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        
+        # Armas detectadas
+        if weapons_detected:
+            cv2.putText(frame, f"Armas: {len(weapons_detected)}", (10, stats_y + stats_spacing * 2), 
                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     
-    except Exception as e:
-        print(f"Error en detección: {e}")
+    except:
+        pass
     
-    return frame, detected_events
-
+    return frame, num_people, weapons_detected, objects_detected
 
 # ============================================================================
 # FUNCIÓN PRINCIPAL
 # ============================================================================
 
 def main():
-    print("=" * 70)
-    print("SISTEMA DE DETECCIÓN DE ACTIVIDADES ANÓMALAS")
-    print("Prevención de Robos, Asaltos y Ataques")
-    print("Basado en CNN y OpenPose (YOLOv8-pose)")
-    print("=" * 70)
-    print("\nCaracterísticas:")
-    print("  ✅ Detección de pose humana")
-    print("  ✅ Detección de armas (cuchillos, pistolas, etc.)")
-    print("  ✅ Clasificación de actividades (CNN)")
-    print("  ✅ Clasificación de riesgo (segura/anómala/delictiva)")
-    print("  ✅ Análisis temporal de secuencias")
-    print("  ✅ Base de datos de eventos")
-    print("  ✅ API REST para alertas")
-    print("\nOpciones:")
+    print("Opciones:")
     print("  - Presiona Enter para usar cámara web")
     print("  - O ingresa la ruta a un archivo de video")
     
     source = input("\nFuente de video [Enter para cámara]: ").strip()
-    location = input("Ubicación [Enter para 'Desconocida']: ").strip() or "Desconocida"
     
-    if source == "":
-        cap = cv2.VideoCapture(0)
-    else:
-        cap = cv2.VideoCapture(source)
-    
+    cap = cv2.VideoCapture(0 if source == "" else source)
     if not cap.isOpened():
-        print("❌ Error: No se pudo abrir la fuente de video")
+        print("Error: No se pudo abrir la fuente de video")
         return
     
-    print("\n✅ Sistema activo. Presiona 'q' para salir")
-    print("📊 Estadísticas disponibles en: http://localhost:5000/stats")
-    print("📡 API REST disponible en: http://localhost:5000\n")
+    print("\nSistema activo. Presiona 'q' para salir\n")
     
     frame_number = 0
+    skip_frames = 2
+    last_frame = None
+    last_weapon_alert_time = {}
     
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
-                print("Fin del video o error al leer frame")
                 break
             
             frame_number += 1
             
-            # Detectar y clasificar
-            frame, events = detect_and_classify(
-                frame, model_pose, model_weapons,
-                activity_classifier, risk_classifier, temporal_analyzer,
-                event_database, alert_api, frame_number, location
-            )
+            if frame_number % skip_frames == 0:
+                frame, num_people, weapons_detected, objects_detected = detect_and_classify(
+                    frame, model_pose, model_objects, model_weapons, WEAPON_CLASSES
+                )
+                last_frame = frame.copy()
+                
+                # Alertas en consola
+                current_time = datetime.now()
+                
+                # Alerta de conteo de personas (cada 30 frames)
+                if frame_number % 30 == 0:
+                    print(f"[{current_time.strftime('%H:%M:%S')}] Personas detectadas: {num_people}")
+                    if objects_detected:
+                        print(f"[{current_time.strftime('%H:%M:%S')}] Objetos detectados: {len(objects_detected)}")
+                
+                # Alerta de armas detectadas (evitar spam, máximo cada 2 segundos)
+                for weapon_bbox, weapon_label, weapon_conf in weapons_detected:
+                    weapon_key = f"{weapon_label}_{weapon_conf:.2f}"
+                    if weapon_key not in last_weapon_alert_time:
+                        last_weapon_alert_time[weapon_key] = current_time
+                        print(f"[{current_time.strftime('%H:%M:%S')}] ALERTA: Arma detectada - {weapon_label.upper()} (Confianza: {weapon_conf:.2f})")
+                    else:
+                        time_diff = (current_time - last_weapon_alert_time[weapon_key]).total_seconds()
+                        if time_diff > 2.0:  # Alerta cada 2 segundos máximo
+                            last_weapon_alert_time[weapon_key] = current_time
+                            print(f"[{current_time.strftime('%H:%M:%S')}] ALERTA: Arma detectada - {weapon_label.upper()} (Confianza: {weapon_conf:.2f})")
+            else:
+                if last_frame is not None:
+                    frame = last_frame
             
-            # Mostrar eventos críticos en consola
-            for event in events:
-                if event['risk_level'] == 'delictiva':
-                    print(f"🚨 [{event['timestamp']}] ALERTA DELICTIVA: {event['activity']} "
-                          f"(Confianza: {event['confidence']:.2f}, Persona: {event['person_id']})")
-                elif event['risk_level'] == 'anómala':
-                    print(f"⚠️  [{event['timestamp']}] ACTIVIDAD ANÓMALA: {event['activity']} "
-                          f"(Confianza: {event['confidence']:.2f}, Persona: {event['person_id']})")
-            
-            # Mostrar frame
-            cv2.imshow("Smart Surveillance - Detección de Actividades Anómalas", frame)
-            
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
+            cv2.imshow("Smart Surveillance - Deteccion de Armas", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
     
     except KeyboardInterrupt:
-        print("\n\n⚠️  Sistema interrumpido por el usuario")
+        pass
     
     finally:
-        # Cerrar recursos
         cap.release()
         cv2.destroyAllWindows()
-        
-        # Mostrar estadísticas finales
-        if event_database:
-            stats = event_database.get_statistics(days=1)
-            print("\n" + "=" * 70)
-            print("ESTADÍSTICAS DEL SISTEMA")
-            print("=" * 70)
-            print(f"Total de eventos: {stats['total_events']}")
-            print(f"  - Seguros: {stats['safe_events']}")
-            print(f"  - Anómalos: {stats['anomalous_events']}")
-            print(f"  - Delictivos: {stats['criminal_events']}")
-            print(f"Confianza promedio: {stats['avg_confidence']:.2f}")
-            print(f"Alertas enviadas: {stats['alerts_sent']}")
-            print("=" * 70)
-        
-        event_database.close()
-        print("\n✅ Sistema cerrado correctamente")
-
+        print("\nSistema cerrado")
 
 if __name__ == "__main__":
     main()
